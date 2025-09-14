@@ -32,272 +32,327 @@ import org.springframework.transaction.annotation.Transactional;
 @Slf4j
 public class AuthService {
 
-	private final UserRepository userRepository;
-	private final UserProfileRepository userProfileRepository;
-	private final PasswordEncoder passwordEncoder;
-	private final AuthenticationManager authenticationManager;
-	private final JwtUtil jwtUtil;
-	private final UserService userService;
-	private final ValidationUtil validationUtil;
-	private final EmailService emailService;
-	private final ApplicationEventPublisher eventPublisher; // Use event publisher instead of direct dependency
+    private final UserRepository userRepository;
+    private final UserProfileRepository userProfileRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final AuthenticationManager authenticationManager;
+    private final JwtUtil jwtUtil;
+    private final ValidationUtil validationUtil;
+    private final EmailService emailService;
+    private final ApplicationEventPublisher eventPublisher;
 
-	/**
-	 * Authenticate user and return JWT token
-	 */
-	public AuthResponse login(LoginRequest request) {
-		try {
-			// Validate input
-			validateLoginRequest(request);
+    /**
+     * Authenticate user and return JWT token
+     */
+    public AuthResponse login(LoginRequest request) {
+        try {
+            // Validate input first
+            validateLoginRequest(request);
 
-			// Authenticate user
-			Authentication authentication = authenticationManager.authenticate(new UsernamePasswordAuthenticationToken(
-					request.getEmail().toLowerCase().trim(), request.getPassword()));
+            log.info("Login attempt for email: {}", request.getEmail());
 
-			// Generate JWT token
-			String jwt = jwtUtil.generateJwtToken(authentication);
+            // Authenticate user
+            Authentication authentication = authenticationManager.authenticate(
+                new UsernamePasswordAuthenticationToken(
+                    request.getEmail().toLowerCase().trim(), 
+                    request.getPassword()
+                )
+            );
 
-			// Get user details
-			UserResponse userResponse = userService.getUserProfile(request.getEmail());
+            // Generate token only after successful authentication
+            String jwt = jwtUtil.generateJwtToken(authentication);
+            
+            // Get user response WITHOUT calling UserService (avoid circular dependency)
+            User user = userRepository.findByEmail(request.getEmail().toLowerCase().trim())
+                .orElseThrow(() -> new BadRequestException("User not found"));
+            
+            UserResponse userResponse = convertToUserResponse(user);
 
-			log.info("User logged in successfully: {}", request.getEmail());
+            log.info("User logged in successfully: {}", request.getEmail());
+            return new AuthResponse(jwt, userResponse);
 
-			return new AuthResponse(jwt, userResponse);
+        } catch (BadCredentialsException e) {
+            log.warn("Invalid login attempt for: {}", request.getEmail());
+            throw new BadRequestException("Invalid email or password");
+        } catch (DisabledException e) {
+            log.warn("Login attempt for disabled account: {}", request.getEmail());
+            throw new BadRequestException("Account is disabled. Please contact support.");
+        } catch (AuthenticationException e) {
+            log.error("Authentication error for email: {}: {}", request.getEmail(), e.getMessage());
+            throw new BadRequestException("Authentication failed");
+        }
+    }
 
-		} catch (BadCredentialsException e) {
-			log.warn("Failed login attempt for email: {}", request.getEmail());
-			throw new BadRequestException("Invalid email or password");
-		} catch (DisabledException e) {
-			log.warn("Login attempt for disabled account: {}", request.getEmail());
-			throw new BadRequestException("Account is disabled. Please contact support.");
-		} catch (AuthenticationException e) {
-			log.error("Authentication error for email: {}: {}", request.getEmail(), e.getMessage());
-			throw new BadRequestException("Authentication failed");
-		}
-	}
+    /**
+     * Register new user account
+     */
+    public AuthResponse register(RegisterRequest request) {
+        // Validate input
+        validateRegistrationRequest(request);
 
-	/**
-	 * Register new user account
-	 */
-	public AuthResponse register(RegisterRequest request) {
-		// Validate input
-		validateRegistrationRequest(request);
+        // Check if user already exists
+        if (userRepository.existsByEmail(request.getEmail().toLowerCase().trim())) {
+            throw new BadRequestException("Email is already registered");
+        }
 
-		// Check if user already exists
-		if (userRepository.existsByEmail(request.getEmail().toLowerCase().trim())) {
-			throw new BadRequestException("Email is already registered");
-		}
+        try {
+            // Create user
+            User user = createUser(request);
+            User savedUser = userRepository.save(user);
 
-		try {
-			// Create user
-			User user = createUser(request);
-			User savedUser = userRepository.save(user);
+            // Create user profile
+            UserProfile profile = createUserProfile(savedUser);
+            userProfileRepository.save(profile);
 
-			// Create user profile
-			UserProfile profile = createUserProfile(savedUser);
-			userProfileRepository.save(profile);
+            // Get user response WITHOUT calling UserService (avoid circular dependency)
+            UserResponse userResponse = convertToUserResponse(savedUser);
 
-			// Generate JWT token
-			String jwt = jwtUtil.generateTokenFromEmail(savedUser.getEmail());
+            // Send welcome email asynchronously
+            sendWelcomeEmailAsync(savedUser);
 
-			// Get user response
-			UserResponse userResponse = userService.getUserProfile(savedUser.getEmail());
+            // Create welcome notification using event publisher
+            eventPublisher.publishEvent(new UserService.NotificationEvent(savedUser, "Welcome to Grow Core Hub!",
+                    "Welcome to our platform! Please complete your profile to start applying for projects.",
+                    NotificationType.SYSTEM));
 
-			// Send welcome email asynchronously
-			sendWelcomeEmailAsync(savedUser);
+            log.info("User registered successfully: {}", savedUser.getEmail());
 
-			// Create welcome notification using event publisher
-			eventPublisher.publishEvent(new UserService.NotificationEvent(savedUser, "Welcome to Grow Core Hub!",
-					"Welcome to our platform! Please complete your profile to start applying for projects.",
-					NotificationType.SYSTEM));
+            // Return response WITHOUT token (user must login after registration)
+            return new AuthResponse(null, userResponse);
 
-			log.info("User registered successfully: {}", savedUser.getEmail());
+        } catch (Exception e) {
+            log.error("Error during user registration: {}", e.getMessage(), e);
+            throw new BadRequestException("Registration failed. Please try again.");
+        }
+    }
 
-			return new AuthResponse(jwt, userResponse);
+    /**
+     * Refresh JWT token
+     */
+    public AuthResponse refreshToken(String refreshToken) {
+        try {
+            if (!jwtUtil.validateJwtToken(refreshToken)) {
+                throw new BadRequestException("Invalid refresh token");
+            }
 
-		} catch (Exception e) {
-			log.error("Error during user registration: {}", e.getMessage(), e);
-			throw new BadRequestException("Registration failed. Please try again.");
-		}
-	}
+            String email = jwtUtil.getEmailFromJwtToken(refreshToken);
+            User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new BadRequestException("User not found"));
 
-	/**
-	 * Refresh JWT token
-	 */
-	public AuthResponse refreshToken(String refreshToken) {
-		try {
-			if (!jwtUtil.validateJwtToken(refreshToken)) {
-				throw new BadRequestException("Invalid refresh token");
-			}
+            if (!user.getIsActive()) {
+                throw new BadRequestException("Account is deactivated");
+            }
 
-			String email = jwtUtil.getEmailFromJwtToken(refreshToken);
-			User user = userService.findByEmail(email);
+            // Generate new token using proper authentication flow
+            Authentication authentication = new UsernamePasswordAuthenticationToken(
+                email, null, java.util.Collections.singletonList(
+                    new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_USER")
+                )
+            );
+            String newToken = jwtUtil.generateJwtToken(authentication);
+            
+            UserResponse userResponse = convertToUserResponse(user);
 
-			if (!user.getIsActive()) {
-				throw new BadRequestException("Account is deactivated");
-			}
+            return new AuthResponse(newToken, userResponse);
 
-			String newToken = jwtUtil.generateTokenFromEmail(email);
-			UserResponse userResponse = userService.getUserProfile(email);
+        } catch (Exception e) {
+            log.error("Error refreshing token: {}", e.getMessage());
+            throw new BadRequestException("Failed to refresh token");
+        }
+    }
 
-			return new AuthResponse(newToken, userResponse);
+    /**
+     * Initiate password reset process
+     */
+    public void initiatePasswordReset(String email) {
+        try {
+            User user = userRepository.findByEmail(email.toLowerCase().trim()).orElse(null);
 
-		} catch (Exception e) {
-			log.error("Error refreshing token: {}", e.getMessage());
-			throw new BadRequestException("Failed to refresh token");
-		}
-	}
+            if (user != null) {
+                // Generate reset token using proper authentication flow
+                Authentication authentication = new UsernamePasswordAuthenticationToken(
+                    email, null, java.util.Collections.singletonList(
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_USER")
+                    )
+                );
+                String resetToken = jwtUtil.generateJwtToken(authentication);
 
-	/**
-	 * Initiate password reset process
-	 */
-	public void initiatePasswordReset(String email) throws Exception {
-		User user = userRepository.findByEmail(email.toLowerCase().trim()).orElse(null);
+                // Send reset email
+                emailService.sendPasswordResetEmail(email, resetToken);
 
-		if (user != null) {
-			// Generate reset token (simplified - in production, use a proper reset token)
-			String resetToken = jwtUtil.generateTokenFromEmail(email);
+                log.info("Password reset initiated for email: {}", email);
+            } else {
+                log.warn("Password reset requested for non-existent email: {}", email);
+            }
 
-			// Send reset email
-			emailService.sendPasswordResetEmail(email, resetToken);
+            // Always return success for security (don't reveal if email exists)
+        } catch (Exception e) {
+            log.error("Error initiating password reset: {}", e.getMessage());
+            // Don't throw exception for security reasons
+        }
+    }
 
-			log.info("Password reset initiated for email: {}", email);
-		} else {
-			log.warn("Password reset requested for non-existent email: {}", email);
-		}
+    /**
+     * Reset password with token
+     */
+    public void resetPassword(String token, String newPassword) {
+        try {
+            if (!jwtUtil.validateJwtToken(token)) {
+                throw new BadRequestException("Invalid or expired reset token");
+            }
 
-		// Always return success for security (don't reveal if email exists)
-	}
+            String email = jwtUtil.getEmailFromJwtToken(token);
+            User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new BadRequestException("User not found"));
 
-	/**
-	 * Reset password with token
-	 */
-	public void resetPassword(String token, String newPassword) {
-		try {
-			if (!jwtUtil.validateJwtToken(token)) {
-				throw new BadRequestException("Invalid or expired reset token");
-			}
+            if (!validationUtil.isValidPassword(newPassword)) {
+                throw new BadRequestException(
+                        "Password must be at least 8 characters long and contain uppercase, lowercase, and numeric characters");
+            }
 
-			String email = jwtUtil.getEmailFromJwtToken(token);
-			User user = userService.findByEmail(email);
+            user.setPassword(passwordEncoder.encode(newPassword));
+            userRepository.save(user);
 
-			if (!validationUtil.isValidPassword(newPassword)) {
-				throw new BadRequestException(
-						"Password must be at least 8 characters long and contain uppercase, lowercase, and numeric characters");
-			}
+            // Create notification using event publisher
+            eventPublisher.publishEvent(new UserService.NotificationEvent(user, "Password Reset", 
+                "Your password has been successfully reset.", NotificationType.SYSTEM));
 
-			user.setPassword(passwordEncoder.encode(newPassword));
-			userRepository.save(user);
+            log.info("Password reset successfully for email: {}", email);
 
-			// Create notification using event publisher
-			eventPublisher.publishEvent(new UserService.NotificationEvent(user, "Password Reset", 
-				"Your password has been successfully reset.", NotificationType.SYSTEM));
+        } catch (Exception e) {
+            log.error("Error resetting password: {}", e.getMessage());
+            throw new BadRequestException("Failed to reset password");
+        }
+    }
 
-			log.info("Password reset successfully for email: {}", email);
+    /**
+     * Change password for authenticated user
+     */
+    public void changePassword(String email, String currentPassword, String newPassword) {
+        User user = userRepository.findByEmail(email)
+            .orElseThrow(() -> new BadRequestException("User not found"));
 
-		} catch (Exception e) {
-			log.error("Error resetting password: {}", e.getMessage());
-			throw new BadRequestException("Failed to reset password");
-		}
-	}
+        // Verify current password
+        if (!passwordEncoder.matches(currentPassword, user.getPassword())) {
+            throw new BadRequestException("Current password is incorrect");
+        }
 
-	/**
-	 * Change password for authenticated user
-	 */
-	public void changePassword(String email, String currentPassword, String newPassword) {
-		User user = userService.findByEmail(email);
+        // Validate new password
+        if (!validationUtil.isValidPassword(newPassword)) {
+            throw new BadRequestException(
+                    "New password must be at least 8 characters long and contain uppercase, lowercase, and numeric characters");
+        }
 
-		// Verify current password
-		if (!passwordEncoder.matches(currentPassword, user.getPassword())) {
-			throw new BadRequestException("Current password is incorrect");
-		}
+        // Update password
+        user.setPassword(passwordEncoder.encode(newPassword));
+        userRepository.save(user);
 
-		// Validate new password
-		if (!validationUtil.isValidPassword(newPassword)) {
-			throw new BadRequestException(
-					"New password must be at least 8 characters long and contain uppercase, lowercase, and numeric characters");
-		}
+        // Create notification using event publisher
+        eventPublisher.publishEvent(new UserService.NotificationEvent(user, "Password Changed", 
+            "Your password has been successfully changed.", NotificationType.SYSTEM));
 
-		// Update password
-		user.setPassword(passwordEncoder.encode(newPassword));
-		userRepository.save(user);
+        log.info("Password changed successfully for email: {}", email);
+    }
 
-		// Create notification using event publisher
-		eventPublisher.publishEvent(new UserService.NotificationEvent(user, "Password Changed", 
-			"Your password has been successfully changed.", NotificationType.SYSTEM));
+    // Private helper methods
 
-		log.info("Password changed successfully for email: {}", email);
-	}
+    private void validateLoginRequest(LoginRequest request) {
+        if (!validationUtil.isValidEmail(request.getEmail())) {
+            throw new BadRequestException("Invalid email format");
+        }
 
-	// Private helper methods
+        if (request.getPassword() == null || request.getPassword().trim().isEmpty()) {
+            throw new BadRequestException("Password is required");
+        }
+    }
 
-	private void validateLoginRequest(LoginRequest request) {
-		if (!validationUtil.isValidEmail(request.getEmail())) {
-			throw new BadRequestException("Invalid email format");
-		}
+    private void validateRegistrationRequest(RegisterRequest request) {
+        if (!validationUtil.isValidEmail(request.getEmail())) {
+            throw new BadRequestException("Invalid email format");
+        }
 
-		if (request.getPassword() == null || request.getPassword().trim().isEmpty()) {
-			throw new BadRequestException("Password is required");
-		}
-	}
+        if (!validationUtil.isValidPassword(request.getPassword())) {
+            throw new BadRequestException(
+                    "Password must be at least 8 characters long and contain uppercase, lowercase, lowercase, and numeric characters");
+        }
 
-	private void validateRegistrationRequest(RegisterRequest request) {
-		if (!validationUtil.isValidEmail(request.getEmail())) {
-			throw new BadRequestException("Invalid email format");
-		}
+        if (!validationUtil.isValidName(request.getFirstName())) {
+            throw new BadRequestException("First name must be between 2 and 50 characters and contain only letters");
+        }
 
-		if (!validationUtil.isValidPassword(request.getPassword())) {
-			throw new BadRequestException(
-					"Password must be at least 8 characters long and contain uppercase, lowercase, and numeric characters");
-		}
+        if (!validationUtil.isValidName(request.getLastName())) {
+            throw new BadRequestException("Last name must be between 2 and 50 characters and contain only letters");
+        }
 
-		if (!validationUtil.isValidName(request.getFirstName())) {
-			throw new BadRequestException("First name must be between 2 and 50 characters and contain only letters");
-		}
+        if (request.getPhone() != null && !request.getPhone().trim().isEmpty()
+                && !validationUtil.isValidPhone(request.getPhone())) {
+            throw new BadRequestException("Invalid phone number format");
+        }
+    }
 
-		if (!validationUtil.isValidName(request.getLastName())) {
-			throw new BadRequestException("Last name must be between 2 and 50 characters and contain only letters");
-		}
+    private User createUser(RegisterRequest request) {
+        User user = new User();
+        user.setEmail(request.getEmail().toLowerCase().trim());
+        user.setPassword(passwordEncoder.encode(request.getPassword()));
+        user.setFirstName(validationUtil.sanitizeInput(request.getFirstName()).trim());
+        user.setLastName(validationUtil.sanitizeInput(request.getLastName()).trim());
 
-		if (request.getPhone() != null && !request.getPhone().trim().isEmpty()
-				&& !validationUtil.isValidPhone(request.getPhone())) {
-			throw new BadRequestException("Invalid phone number format");
-		}
-	}
+        if (request.getPhone() != null && !request.getPhone().trim().isEmpty()) {
+            user.setPhone(validationUtil.normalizePhone(request.getPhone()));
+        }
 
-	private User createUser(RegisterRequest request) {
-		User user = new User();
-		user.setEmail(request.getEmail().toLowerCase().trim());
-		user.setPassword(passwordEncoder.encode(request.getPassword()));
-		user.setFirstName(validationUtil.sanitizeInput(request.getFirstName()).trim());
-		user.setLastName(validationUtil.sanitizeInput(request.getLastName()).trim());
+        user.setEmailVerified(false);
+        user.setIsActive(true);
 
-		if (request.getPhone() != null && !request.getPhone().trim().isEmpty()) {
-			user.setPhone(validationUtil.normalizePhone(request.getPhone()));
-		}
+        return user;
+    }
 
-		user.setEmailVerified(false);
-		user.setIsActive(true);
+    private UserProfile createUserProfile(User user) {
+        UserProfile profile = new UserProfile();
+        profile.setUser(user);
+        profile.setVerificationStatus(VerificationStatus.PENDING);
+        profile.setProfileCompleted(false);
+        profile.setExperienceYears(0);
 
-		return user;
-	}
+        return profile;
+    }
 
-	private UserProfile createUserProfile(User user) {
-		UserProfile profile = new UserProfile();
-		profile.setUser(user);
-		profile.setVerificationStatus(VerificationStatus.PENDING);
-		profile.setProfileCompleted(false);
-		profile.setExperienceYears(0);
+    private void sendWelcomeEmailAsync(User user) {
+        try {
+            emailService.sendWelcomeEmail(user.getEmail(), user.getFirstName());
+        } catch (Exception e) {
+            log.error("Failed to send welcome email to: {}", user.getEmail(), e);
+            // Don't throw exception as this shouldn't fail the registration
+        }
+    }
 
-		return profile;
-	}
+    /**
+     * Convert User entity to UserResponse DTO
+     * This avoids circular dependency with UserService
+     */
+    private UserResponse convertToUserResponse(User user) {
+        UserResponse response = new UserResponse();
+        
+        // Basic user information
+        response.setId(user.getId());
+        response.setEmail(user.getEmail());
+        response.setFirstName(user.getFirstName());
+        response.setLastName(user.getLastName());
+        response.setPhone(user.getPhone());
+        response.setEmailVerified(user.getEmailVerified());
+        response.setCreatedAt(user.getCreatedAt());
 
-	private void sendWelcomeEmailAsync(User user) {
-		try {
-			emailService.sendWelcomeEmail(user.getEmail(), user.getFirstName());
-		} catch (Exception e) {
-			log.error("Failed to send welcome email to: {}", user.getEmail(), e);
-			// Don't throw exception as this shouldn't fail the registration
-		}
-	}
+        // Profile information
+        UserProfile profile = userProfileRepository.findByUserId(user.getId()).orElse(null);
+        if (profile != null) {
+            response.setAadhaarNumber(profile.getAadhaarNumber());
+            response.setEducation(profile.getEducation());
+            response.setSkills(profile.getSkills());
+            response.setExperienceYears(profile.getExperienceYears());
+            response.setProfileCompleted(profile.getProfileCompleted());
+            response.setVerificationStatus(profile.getVerificationStatus());
+        }
+
+        return response;
+    }
 }

@@ -43,8 +43,16 @@ public class UserService implements UserDetailsService {
 			throw new UsernameNotFoundException("User account is deactivated: " + email);
 		}
 
-		return new org.springframework.security.core.userdetails.User(user.getEmail(), user.getPassword(),
-				user.getEmailVerified(), // enabled
+		// FIXED: Changed from user.getEmailVerified() to true
+		// This allows users to login even if they haven't verified their email yet
+		return new org.springframework.security.core.userdetails.User(user.getEmail(), user.getPassword(), true, // enabled
+																													// //
+																													// -
+																													// CHANGED
+																													// FROM
+																													// user.getEmailVerified()
+																													// to
+																													// true
 				true, // accountNonExpired
 				true, // credentialsNonExpired
 				user.getIsActive(), // accountNonLocked
@@ -122,9 +130,8 @@ public class UserService implements UserDetailsService {
 		userRepository.save(user);
 
 		// Publish event for notification creation (to avoid circular dependency)
-		eventPublisher.publishEvent(new NotificationEvent(user, "Email Verified", 
-			"Your email has been successfully verified.", 
-			com.growcorehub.enums.NotificationType.SYSTEM));
+		eventPublisher.publishEvent(new NotificationEvent(user, "Email Verified",
+				"Your email has been successfully verified.", com.growcorehub.enums.NotificationType.SYSTEM));
 
 		log.info("Email verified for user: {}", email);
 	}
@@ -336,9 +343,20 @@ public class UserService implements UserDetailsService {
 			this.type = type;
 		}
 
-		public User getUser() { return user; }
-		public String getTitle() { return title; }
-		public String getMessage() { return message; }
-		public com.growcorehub.enums.NotificationType getType() { return type; }
+		public User getUser() {
+			return user;
+		}
+
+		public String getTitle() {
+			return title;
+		}
+
+		public String getMessage() {
+			return message;
+		}
+
+		public com.growcorehub.enums.NotificationType getType() {
+			return type;
+		}
 	}
 }
