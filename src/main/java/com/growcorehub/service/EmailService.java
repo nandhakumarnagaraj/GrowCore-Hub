@@ -2,6 +2,7 @@ package com.growcorehub.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
@@ -15,11 +16,22 @@ import jakarta.mail.internet.MimeMessage;
 public class EmailService {
 
 	private final JavaMailSender mailSender;
+	
+	@Value("${spring.mail.username:noreply@growcorehub.com}")
+	private String fromEmail;
+	
+	@Value("${email.enabled:false}")
+	private boolean emailEnabled;
 
 	public void sendSimpleMessage(String to, String subject, String text) {
+		if (!emailEnabled) {
+			log.info("Email service is disabled. Would have sent email to: {} with subject: {}", to, subject);
+			return;
+		}
+		
 		try {
 			SimpleMailMessage message = new SimpleMailMessage();
-			message.setFrom("noreply@growcorehub.com");
+			message.setFrom(fromEmail);
 			message.setTo(to);
 			message.setSubject(subject);
 			message.setText(text);
@@ -27,6 +39,7 @@ public class EmailService {
 			log.info("Email sent successfully to: {}", to);
 		} catch (Exception e) {
 			log.error("Failed to send email to: {}, error: {}", to, e.getMessage());
+			// Don't throw exception to prevent registration failure
 		}
 	}
 
@@ -47,22 +60,34 @@ public class EmailService {
 		sendSimpleMessage(email, subject, text);
 	}
 
-	public void sendPasswordResetEmail(String to, String token) throws Exception {
-		String subject = "Password Reset Request";
-		String resetUrl = "http://localhost:8080/reset-password?token=" + token;
+	public void sendPasswordResetEmail(String to, String token) {
+		if (!emailEnabled) {
+			log.info("Email service is disabled. Would have sent password reset email to: {}", to);
+			return;
+		}
+		
+		try {
+			String subject = "Password Reset Request";
+			String resetUrl = "http://localhost:3000/reset-password?token=" + token; // Update with your frontend URL
 
-		String body = "<p>Hello,</p>" + "<p>You requested to reset your password.</p>"
-				+ "<p>Click the link below to reset it:</p>" + "<p><a href=\"" + resetUrl + "\">Reset Password</a></p>"
-				+ "<br>" + "<p>If you did not request a password reset, please ignore this email.</p>";
+			String body = "<p>Hello,</p>" + "<p>You requested to reset your password.</p>"
+					+ "<p>Click the link below to reset it:</p>" + "<p><a href=\"" + resetUrl + "\">Reset Password</a></p>"
+					+ "<br>" + "<p>If you did not request a password reset, please ignore this email.</p>"
+					+ "<p>This link will expire in 24 hours.</p>";
 
-		MimeMessage message = mailSender.createMimeMessage();
-		MimeMessageHelper helper = new MimeMessageHelper(message, true);
+			MimeMessage message = mailSender.createMimeMessage();
+			MimeMessageHelper helper = new MimeMessageHelper(message, true);
 
-		helper.setTo(to);
-		helper.setSubject(subject);
-		helper.setText(body, true); // true = HTML
+			helper.setFrom(fromEmail);
+			helper.setTo(to);
+			helper.setSubject(subject);
+			helper.setText(body, true); // true = HTML
 
-		mailSender.send(message);
+			mailSender.send(message);
+			log.info("Password reset email sent successfully to: {}", to);
+		} catch (Exception e) {
+			log.error("Failed to send password reset email to: {}, error: {}", to, e.getMessage());
+			throw new RuntimeException("Failed to send password reset email", e);
+		}
 	}
-
 }
