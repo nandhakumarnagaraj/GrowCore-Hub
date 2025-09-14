@@ -4,6 +4,8 @@ import com.growcorehub.entity.Notification;
 import com.growcorehub.entity.User;
 import com.growcorehub.enums.NotificationType;
 import com.growcorehub.repository.NotificationRepository;
+import com.growcorehub.repository.UserRepository;
+import com.growcorehub.exception.ResourceNotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -16,20 +18,20 @@ import org.springframework.transaction.annotation.Transactional;
 public class NotificationService {
 
 	private final NotificationRepository notificationRepository;
-	private final UserService userService;
+	private final UserRepository userRepository; // Use UserRepository directly instead of UserService
 
 	public Page<Notification> getUserNotifications(String userEmail, Pageable pageable) {
-		User user = userService.findByEmail(userEmail);
+		User user = findUserByEmail(userEmail);
 		return notificationRepository.findByUserIdOrderByCreatedAtDesc(user.getId(), pageable);
 	}
 
 	public long getUnreadNotificationCount(String userEmail) {
-		User user = userService.findByEmail(userEmail);
+		User user = findUserByEmail(userEmail);
 		return notificationRepository.countByUserIdAndIsReadFalse(user.getId());
 	}
 
 	public void markAsRead(Long notificationId, String userEmail) {
-		User user = userService.findByEmail(userEmail);
+		User user = findUserByEmail(userEmail);
 		Notification notification = notificationRepository.findById(notificationId)
 				.orElseThrow(() -> new RuntimeException("Notification not found"));
 
@@ -48,5 +50,11 @@ public class NotificationService {
 		notification.setMessage(message);
 		notification.setType(type);
 		notificationRepository.save(notification);
+	}
+
+	// Helper method to find user by email without depending on UserService
+	private User findUserByEmail(String email) {
+		return userRepository.findByEmail(email)
+				.orElseThrow(() -> new ResourceNotFoundException("User not found with email: " + email));
 	}
 }

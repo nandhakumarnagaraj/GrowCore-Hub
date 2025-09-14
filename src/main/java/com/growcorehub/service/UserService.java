@@ -12,6 +12,7 @@ import com.growcorehub.repository.UserRepository;
 import com.growcorehub.util.ValidationUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
@@ -20,7 +21,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collections;
-import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -31,7 +31,7 @@ public class UserService implements UserDetailsService {
 	private final UserRepository userRepository;
 	private final UserProfileRepository userProfileRepository;
 	private final ValidationUtil validationUtil;
-	private final NotificationService notificationService;
+	private final ApplicationEventPublisher eventPublisher; // Use event publisher for notifications
 
 	@Override
 	@Transactional(readOnly = true)
@@ -121,9 +121,10 @@ public class UserService implements UserDetailsService {
 		user.setEmailVerified(true);
 		userRepository.save(user);
 
-		// Create notification
-		notificationService.createNotification(user, "Email Verified", "Your email has been successfully verified.",
-				com.growcorehub.enums.NotificationType.SYSTEM);
+		// Publish event for notification creation (to avoid circular dependency)
+		eventPublisher.publishEvent(new NotificationEvent(user, "Email Verified", 
+			"Your email has been successfully verified.", 
+			com.growcorehub.enums.NotificationType.SYSTEM));
 
 		log.info("Email verified for user: {}", email);
 	}
@@ -145,8 +146,8 @@ public class UserService implements UserDetailsService {
 		default -> "Your profile verification is pending review.";
 		};
 
-		notificationService.createNotification(user, "Profile Verification Update", message,
-				com.growcorehub.enums.NotificationType.SYSTEM);
+		eventPublisher.publishEvent(new NotificationEvent(user, "Profile Verification Update", message,
+				com.growcorehub.enums.NotificationType.SYSTEM));
 
 		log.info("Verification status updated to {} for user: {}", status, email);
 	}
@@ -319,5 +320,25 @@ public class UserService implements UserDetailsService {
 		public Boolean getProfileComplete() {
 			return profileComplete;
 		}
+	}
+
+	// Event class for notifications
+	public static class NotificationEvent {
+		private final User user;
+		private final String title;
+		private final String message;
+		private final com.growcorehub.enums.NotificationType type;
+
+		public NotificationEvent(User user, String title, String message, com.growcorehub.enums.NotificationType type) {
+			this.user = user;
+			this.title = title;
+			this.message = message;
+			this.type = type;
+		}
+
+		public User getUser() { return user; }
+		public String getTitle() { return title; }
+		public String getMessage() { return message; }
+		public com.growcorehub.enums.NotificationType getType() { return type; }
 	}
 }

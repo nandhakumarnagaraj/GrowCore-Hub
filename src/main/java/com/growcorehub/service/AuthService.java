@@ -15,6 +15,7 @@ import com.growcorehub.util.JwtUtil;
 import com.growcorehub.util.ValidationUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.DisabledException;
@@ -39,7 +40,7 @@ public class AuthService {
 	private final UserService userService;
 	private final ValidationUtil validationUtil;
 	private final EmailService emailService;
-	private final NotificationService notificationService;
+	private final ApplicationEventPublisher eventPublisher; // Use event publisher instead of direct dependency
 
 	/**
 	 * Authenticate user and return JWT token
@@ -105,10 +106,10 @@ public class AuthService {
 			// Send welcome email asynchronously
 			sendWelcomeEmailAsync(savedUser);
 
-			// Create welcome notification
-			notificationService.createNotification(savedUser, "Welcome to Grow Core Hub!",
+			// Create welcome notification using event publisher
+			eventPublisher.publishEvent(new UserService.NotificationEvent(savedUser, "Welcome to Grow Core Hub!",
 					"Welcome to our platform! Please complete your profile to start applying for projects.",
-					NotificationType.SYSTEM);
+					NotificationType.SYSTEM));
 
 			log.info("User registered successfully: {}", savedUser.getEmail());
 
@@ -149,7 +150,6 @@ public class AuthService {
 
 	/**
 	 * Initiate password reset process
-	 * @throws Exception 
 	 */
 	public void initiatePasswordReset(String email) throws Exception {
 		User user = userRepository.findByEmail(email.toLowerCase().trim()).orElse(null);
@@ -189,9 +189,9 @@ public class AuthService {
 			user.setPassword(passwordEncoder.encode(newPassword));
 			userRepository.save(user);
 
-			// Create notification
-			notificationService.createNotification(user, "Password Reset", "Your password has been successfully reset.",
-					NotificationType.SYSTEM);
+			// Create notification using event publisher
+			eventPublisher.publishEvent(new UserService.NotificationEvent(user, "Password Reset", 
+				"Your password has been successfully reset.", NotificationType.SYSTEM));
 
 			log.info("Password reset successfully for email: {}", email);
 
@@ -222,9 +222,9 @@ public class AuthService {
 		user.setPassword(passwordEncoder.encode(newPassword));
 		userRepository.save(user);
 
-		// Create notification
-		notificationService.createNotification(user, "Password Changed", "Your password has been successfully changed.",
-				NotificationType.SYSTEM);
+		// Create notification using event publisher
+		eventPublisher.publishEvent(new UserService.NotificationEvent(user, "Password Changed", 
+			"Your password has been successfully changed.", NotificationType.SYSTEM));
 
 		log.info("Password changed successfully for email: {}", email);
 	}
