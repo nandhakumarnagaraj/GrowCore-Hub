@@ -1,5 +1,6 @@
 package com.growcorehub.dto.response;
 
+import com.growcorehub.enums.ApplicationStatus;
 import com.growcorehub.enums.ProjectStatus;
 import lombok.Data;
 
@@ -22,4 +23,9 @@ public class ProjectResponse {
 	private String clientCrmUrl;
 	private Boolean hasApplied;
 	private List<AssessmentResponse> assessments;
+	
+	// Additional fields for user-specific information
+	private ApplicationStatus applicationStatus;
+	private LocalDateTime appliedAt;
+	private BigDecimal assessmentScore;
 }

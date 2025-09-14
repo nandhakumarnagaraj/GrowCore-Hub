@@ -4,7 +4,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
+
+import jakarta.mail.internet.MimeMessage;
 
 @Service
 @RequiredArgsConstructor
@@ -43,4 +46,23 @@ public class EmailService {
 				+ "Grow Core Hub Team", projectTitle);
 		sendSimpleMessage(email, subject, text);
 	}
+
+	public void sendPasswordResetEmail(String to, String token) throws Exception {
+		String subject = "Password Reset Request";
+		String resetUrl = "http://localhost:8080/reset-password?token=" + token;
+
+		String body = "<p>Hello,</p>" + "<p>You requested to reset your password.</p>"
+				+ "<p>Click the link below to reset it:</p>" + "<p><a href=\"" + resetUrl + "\">Reset Password</a></p>"
+				+ "<br>" + "<p>If you did not request a password reset, please ignore this email.</p>";
+
+		MimeMessage message = mailSender.createMimeMessage();
+		MimeMessageHelper helper = new MimeMessageHelper(message, true);
+
+		helper.setTo(to);
+		helper.setSubject(subject);
+		helper.setText(body, true); // true = HTML
+
+		mailSender.send(message);
+	}
+
 }

@@ -149,8 +149,9 @@ public class AuthService {
 
 	/**
 	 * Initiate password reset process
+	 * @throws Exception 
 	 */
-	public void initiatePasswordReset(String email) {
+	public void initiatePasswordReset(String email) throws Exception {
 		User user = userRepository.findByEmail(email.toLowerCase().trim()).orElse(null);
 
 		if (user != null) {
